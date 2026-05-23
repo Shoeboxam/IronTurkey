@@ -1,0 +1,6 @@
+**/.DS_Store
+__pycache__/
+*.pyc
+
+# Built app bundle; generated from ui/Frozen Turkey Locker.applescript + icon
+build/
