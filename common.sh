@@ -7,8 +7,6 @@ ACTIVE_DIR="/Library/Application Support/Cold Turkey"
 ACTIVE_DB="$ACTIVE_DIR/data-app.db"
 ACTIVE_BROWSER_DB="$ACTIVE_DIR/data-browser.db"
 ACTIVE_HELPER_DB="$ACTIVE_DIR/data-helper.db"
-ACTIVE_WAL="$ACTIVE_DIR/data-app.db-wal"
-ACTIVE_SHM="$ACTIVE_DIR/data-app.db-shm"
 
 CT_APP_BUNDLE="/Applications/Cold Turkey Blocker.app"
 CT_AGENT="/Applications/Cold Turkey Blocker.app/Contents/MacOS/Cold Turkey Blocker -agent"
@@ -26,6 +24,7 @@ GOLD_DIR="$ENFORCER_DIR/gold"
 GOLD_DB="$GOLD_DIR/data-app.db"
 GOLD_BROWSER_DB="$GOLD_DIR/data-browser.db"
 GOLD_HELPER_DB="$GOLD_DIR/data-helper.db"
+LOCK_REQUEST_DIR="/private/tmp"
 
 console_user() {
     local user_name
@@ -105,6 +104,13 @@ console_user_uid() {
     id -u "$user_name" 2>/dev/null || true
 }
 
+lock_request_file() {
+    local uid
+    uid="$(console_user_uid)"
+    [ -n "$uid" ] || uid="unknown"
+    printf '%s/ironturkey-lock-request.%s' "$LOCK_REQUEST_DIR" "$uid"
+}
+
 ct_agent_pattern() {
     if [ -x "$CT_AGENT" ]; then
         printf '%s' "$CT_AGENT"
@@ -171,11 +177,7 @@ file_signature() {
         printf 'missing'
         return 0
     fi
-    if stat -f '%m:%z' "$path" >/dev/null 2>&1; then
-        stat -f '%m:%z' "$path"
-    else
-        stat -c '%Y:%s' "$path"
-    fi
+    stat -f '%m:%z' "$path"
 }
 
 state_signature() {
@@ -184,6 +186,10 @@ state_signature() {
     printf 'app-settings:%s\n' "$app_hash"
     printf 'browser:%s\n' "$(file_signature "$ACTIVE_BROWSER_DB")"
     printf 'helper:%s\n' "$(file_signature "$ACTIVE_HELPER_DB")"
+}
+
+refresh_state_signature() {
+    state_signature > "$HASH_FILE"
 }
 
 stop_cold_turkey() {
@@ -269,18 +275,31 @@ verify_gold_baselines_healthy() {
     fi
 }
 
-restore_gold_state_into_active() {
+restore_policy_gold_into_active_stopped() {
     local tmp_dir="$1"
-
     [ -f "$GOLD_DB" ] || return 1
     [ -f "$ACTIVE_DB" ] || return 1
 
     mkdir -p "$tmp_dir"
-    stop_cold_turkey || return 1
     restore_one_gold_into_active "$GOLD_DB" "$ACTIVE_DB" "$tmp_dir/data-app.db.tmp" || return 1
+}
+
+restore_stats_gold_into_active_stopped() {
+    local tmp_dir="$1"
+
+    mkdir -p "$tmp_dir"
     restore_one_gold_into_active "$GOLD_BROWSER_DB" "$ACTIVE_BROWSER_DB" "$tmp_dir/data-browser.db.tmp" || return 1
     restore_one_gold_into_active "$GOLD_HELPER_DB" "$ACTIVE_HELPER_DB" "$tmp_dir/data-helper.db.tmp" || return 1
-    state_signature > "$HASH_FILE"
+}
+
+restore_gold_state_into_active() {
+    local tmp_dir="$1"
+
+    mkdir -p "$tmp_dir"
+    stop_cold_turkey || return 1
+    restore_policy_gold_into_active_stopped "$tmp_dir" || return 1
+    restore_stats_gold_into_active_stopped "$tmp_dir" || return 1
+    refresh_state_signature
 }
 
 promote_active_state_to_gold() {
@@ -290,16 +309,31 @@ promote_active_state_to_gold() {
     backup_active_to_gold "$ACTIVE_DB" "$GOLD_DB" "$tmp_dir/data-app.db.tmp" || return 1
     backup_active_to_gold "$ACTIVE_BROWSER_DB" "$GOLD_BROWSER_DB" "$tmp_dir/data-browser.db.tmp" || return 1
     backup_active_to_gold "$ACTIVE_HELPER_DB" "$GOLD_HELPER_DB" "$tmp_dir/data-helper.db.tmp" || return 1
-    state_signature > "$HASH_FILE"
+    refresh_state_signature
 }
 
-# Backwards-compatible wrappers used by older scripts.
-restore_gold_into_active() {
-    local tmp_db="$1"
-    restore_gold_state_into_active "$(dirname "$tmp_db")"
+promote_policy_active_to_gold() {
+    local tmp_dir="$1"
+
+    mkdir -p "$tmp_dir" "$GOLD_DIR"
+    backup_active_to_gold "$ACTIVE_DB" "$GOLD_DB" "$tmp_dir/data-app.db.tmp" || return 1
+    refresh_state_signature
 }
 
-promote_active_to_gold() {
-    local tmp_gold="$1"
-    promote_active_state_to_gold "$(dirname "$tmp_gold")"
+restore_policy_gold_into_active() {
+    local tmp_dir="$1"
+
+    mkdir -p "$tmp_dir"
+    stop_cold_turkey || return 1
+    restore_policy_gold_into_active_stopped "$tmp_dir" || return 1
+    refresh_state_signature
+}
+
+restore_stats_gold_into_active() {
+    local tmp_dir="$1"
+
+    mkdir -p "$tmp_dir"
+    stop_cold_turkey || return 1
+    restore_stats_gold_into_active_stopped "$tmp_dir" || return 1
+    refresh_state_signature
 }

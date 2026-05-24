@@ -1,13 +1,7 @@
 #!/bin/bash
 
 set -euo pipefail
-
-ACTIVE_DIR="/Library/Application Support/Cold Turkey"
-ACTIVE_DB="$ACTIVE_DIR/data-app.db"
-ACTIVE_WAL="$ACTIVE_DIR/data-app.db-wal"
-ACTIVE_SHM="$ACTIVE_DIR/data-app.db-shm"
-
-CT_AGENT="/Applications/Cold Turkey Blocker.app/Contents/MacOS/Cold Turkey Blocker -agent"
+umask 077
 
 ENFORCER_DIR="/Library/Application Support/IronTurkeyLocker"
 LOG_DIR="$ENFORCER_DIR/logs"

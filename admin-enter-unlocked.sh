@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -euo pipefail
+umask 077
 
 source "/Library/Application Support/IronTurkeyLocker/common.sh"
 

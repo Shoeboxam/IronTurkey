@@ -515,7 +515,7 @@ def compare_stats_db(
 
     conn = sqlite3.connect(f"file:{live_path}?mode=ro", uri=True)
     try:
-        conn.execute("ATTACH DATABASE ? AS gold", (f"file:{gold_path}?mode=ro",))
+        conn.execute("ATTACH DATABASE ? AS gold", (f"file:{gold_path}?mode=ro&immutable=1",))
         live_ok = validate_schema(conn, db_label, "main", expected_schemas, weaker)
         gold_ok = validate_schema(conn, db_label, "gold", expected_schemas, weaker)
         if not (live_ok and gold_ok):

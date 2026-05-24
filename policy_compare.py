@@ -100,7 +100,11 @@ def decode_payload(value: str) -> str:
 
 
 def load_settings_json(db_path: str) -> dict[str, Any]:
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    immutable = db_path.startswith(DEFAULT_GOLD_DB.rsplit("/", 1)[0])
+    uri = f"file:{db_path}?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
+    conn = sqlite3.connect(uri, uri=True)
     try:
         actual_tables = {
             row[0]

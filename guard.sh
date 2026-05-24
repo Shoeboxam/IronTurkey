@@ -105,17 +105,43 @@ log() {
     log_line "$LOG_FILE" "$@"
 }
 
-restore_gold() {
-    restore_gold_state_into_active "$TMP_DIR" || {
-        log "ERROR: restore_gold failed"
+lock_request_file_path() {
+    lock_request_file
+}
+
+lock_request_pending() {
+    [ -f "$(lock_request_file_path)" ]
+}
+
+clear_lock_request() {
+    rm -f "$(lock_request_file_path)"
+}
+
+restore_policy_gold() {
+    restore_policy_gold_into_active "$TMP_DIR" || {
+        log "ERROR: restore_policy_gold failed"
         exit 1
     }
     local summary
     summary="$(combined_change_summary)"
     if [ -n "$summary" ]; then
-        log "Unauthorized weakening restored: $summary"
+        log "Unauthorized policy weakening restored: $summary"
     else
-        log "Unauthorized weakening restored"
+        log "Unauthorized policy weakening restored"
+    fi
+}
+
+restore_stats_gold() {
+    restore_stats_gold_into_active "$TMP_DIR" || {
+        log "ERROR: restore_stats_gold failed"
+        exit 1
+    }
+    local summary
+    summary="$(combined_change_summary)"
+    if [ -n "$summary" ]; then
+        log "Unauthorized stats weakening restored: $summary"
+    else
+        log "Unauthorized stats weakening restored"
     fi
 }
 
@@ -165,6 +191,28 @@ main() {
 
     while true; do
         current_mode="$(mode)"
+        request_file="$(lock_request_file_path)"
+
+        if [ -f "$request_file" ]; then
+            clear_lock_request
+            if [ "$current_mode" = "unlocked" ]; then
+                restore_policy_gold_into_active "$TMP_DIR" || {
+                    log "ERROR: user-requested relock failed"
+                    exit 1
+                }
+                set_mode "locked"
+                log "User-requested relock completed"
+                current_mode="locked"
+                grace_until=$(( $(date +%s) + STARTUP_GRACE_SECONDS ))
+                last_running=0
+                pending_signature=""
+                pending_since=0
+                churn_since=0
+                comparator_errors=0
+                stats_errors=0
+                last_error=""
+            fi
+        fi
 
         if [ "$current_mode" = "locked" ]; then
             now="$(date +%s)"
@@ -262,7 +310,7 @@ main() {
                 if [ -n "$compare_output" ]; then
                     log "Comparator rejected live policy: $compare_output"
                 fi
-                restore_gold
+                restore_policy_gold
                 grace_until=$((now + STARTUP_GRACE_SECONDS))
                 last_running=0
                 pending_signature=""
@@ -285,7 +333,7 @@ main() {
                 fi
                 if [ "$comparator_errors" -ge "$COMPARATOR_ERROR_LIMIT" ]; then
                     log "Policy comparator exceeded retry budget; restoring gold fail-closed"
-                    restore_gold
+                    restore_policy_gold
                     comparator_errors=0
                     stats_errors=0
                     grace_until=$((now + STARTUP_GRACE_SECONDS))
@@ -311,7 +359,7 @@ main() {
                 if [ -n "$stats_output" ]; then
                     log "Stats comparator rejected live stats: $stats_output"
                 fi
-                restore_gold
+                restore_stats_gold
                 grace_until=$((now + STARTUP_GRACE_SECONDS))
                 last_running=0
                 pending_signature=""
@@ -334,7 +382,7 @@ main() {
                 fi
                 if [ "$stats_errors" -ge "$COMPARATOR_ERROR_LIMIT" ]; then
                     log "Stats comparator exceeded retry budget; restoring gold fail-closed"
-                    restore_gold
+                    restore_stats_gold
                     comparator_errors=0
                     stats_errors=0
                     grace_until=$((now + STARTUP_GRACE_SECONDS))

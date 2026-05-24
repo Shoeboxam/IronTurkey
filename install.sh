@@ -9,10 +9,6 @@ LAUNCH_DAEMONS_DIR="/Library/LaunchDaemons"
 APP_DST="/Applications/Iron Turkey Locker.app"
 GUARD_PLIST="com.ironturkey.locker.guard.plist"
 RESTORE_PLIST="com.ironturkey.locker.restore.plist"
-LEGACY_SUPPORT_DIR="/Library/Application Support/FrozenTurkeyLocker"
-LEGACY_APP_DST="/Applications/Frozen Turkey Locker.app"
-LEGACY_GUARD_PLIST="com.frozenturkey.locker.guard.plist"
-LEGACY_RESTORE_PLIST="com.frozenturkey.locker.restore.plist"
 COLD_TURKEY_DIR="/Library/Application Support/Cold Turkey"
 
 require_root() {
@@ -102,13 +98,6 @@ verify_gold_db_integrity() {
     sqlite3 "$dst" 'PRAGMA integrity_check;' | grep -qx 'ok'
 }
 
-cleanup_legacy_install() {
-    launchctl bootout system "$LAUNCH_DAEMONS_DIR/$LEGACY_GUARD_PLIST" 2>/dev/null || true
-    launchctl bootout system "$LAUNCH_DAEMONS_DIR/$LEGACY_RESTORE_PLIST" 2>/dev/null || true
-    rm -f "$LAUNCH_DAEMONS_DIR/$LEGACY_GUARD_PLIST" "$LAUNCH_DAEMONS_DIR/$LEGACY_RESTORE_PLIST"
-    rm -rf "$LEGACY_SUPPORT_DIR" "$LEGACY_APP_DST"
-}
-
 normalize_cold_turkey_dir() {
     if [ -d "$COLD_TURKEY_DIR" ]; then
         chmod 1777 "$COLD_TURKEY_DIR"
@@ -118,7 +107,6 @@ normalize_cold_turkey_dir() {
 require_root
 
 bash "$REPO_DIR/build_app.sh"
-cleanup_legacy_install
 normalize_cold_turkey_dir
 
 mkdir -p "$SUPPORT_DIR/gold" "$SUPPORT_DIR/logs" "$SUPPORT_DIR/state"
@@ -129,6 +117,9 @@ copy_script "$REPO_DIR/enforce.sh" "$SUPPORT_DIR/enforce.sh"
 copy_script "$REPO_DIR/admin-enter-unlocked.sh" "$SUPPORT_DIR/admin-enter-unlocked.sh"
 copy_script "$REPO_DIR/admin-commit.sh" "$SUPPORT_DIR/admin-commit.sh"
 copy_script "$REPO_DIR/admin-lock.sh" "$SUPPORT_DIR/admin-lock.sh"
+cp "$REPO_DIR/request-lock.sh" "$SUPPORT_DIR/request-lock.sh"
+chown root:wheel "$SUPPORT_DIR/request-lock.sh"
+chmod 755 "$SUPPORT_DIR/request-lock.sh"
 
 cp "$REPO_DIR/policy_compare.py" "$SUPPORT_DIR/policy_compare.py"
 cp "$REPO_DIR/stats_compare.py" "$SUPPORT_DIR/stats_compare.py"
@@ -142,7 +133,9 @@ chmod 644 "$LAUNCH_DAEMONS_DIR/$GUARD_PLIST" "$LAUNCH_DAEMONS_DIR/$RESTORE_PLIST
 
 printf 'locked\n' > "$SUPPORT_DIR/state/mode"
 chown -R root:wheel "$SUPPORT_DIR"
-chmod 700 "$SUPPORT_DIR" "$SUPPORT_DIR/gold" "$SUPPORT_DIR/logs" "$SUPPORT_DIR/state"
+chmod 755 "$SUPPORT_DIR" "$SUPPORT_DIR/gold" "$SUPPORT_DIR/state"
+chmod 700 "$SUPPORT_DIR/logs"
+chmod 644 "$SUPPORT_DIR/state/mode"
 
 ensure_gold_db "data-app.db" required
 ensure_gold_db "data-browser.db" optional
@@ -161,6 +154,8 @@ chown -R root:wheel "$APP_DST"
 if [ -n "${SUDO_USER:-}" ]; then
     chown -R "$SUDO_USER":staff "$REPO_DIR/build" 2>/dev/null || true
 fi
+
+chmod 644 "$SUPPORT_DIR"/gold/*.db 2>/dev/null || true
 
 launchctl bootout system "$LAUNCH_DAEMONS_DIR/$GUARD_PLIST" 2>/dev/null || true
 launchctl bootout system "$LAUNCH_DAEMONS_DIR/$RESTORE_PLIST" 2>/dev/null || true
