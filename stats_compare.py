@@ -418,18 +418,32 @@ def table_cutoff_value(conn: sqlite3.Connection, table: str, cutoff_epoch: float
     return cutoff_epoch
 
 
-def identity_diff_expr(identity_columns: tuple[str, ...]) -> list[str]:
-    return [f"l.{quote_ident(column)} IS NOT b.{quote_ident(column)}" for column in identity_columns]
-
-
-def join_expr(key_columns: tuple[str, ...]) -> str:
-    return " AND ".join(f"l.{quote_ident(column)} = b.{quote_ident(column)}" for column in key_columns)
-
-
-def missing_expr(key_columns: tuple[str, ...]) -> str:
-    # Any non-date key column being NULL after the LEFT JOIN indicates absence.
-    marker = key_columns[-1]
-    return f"l.{quote_ident(marker)} IS NULL"
+def aggregate_window_stats(
+    conn: sqlite3.Connection,
+    schema: str,
+    table: str,
+    cutoff_value: float,
+    counter_columns: tuple[str, ...],
+) -> tuple[int, dict[str, float]]:
+    quoted_table = quote_ident(table)
+    row_count = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM {quote_ident(schema)}.{quoted_table} WHERE date >= ?",
+            (cutoff_value,),
+        ).fetchone()[0]
+    )
+    counter_sums: dict[str, float] = {}
+    for column in counter_columns:
+        value = conn.execute(
+            f"SELECT COALESCE(SUM({quote_ident(column)}), 0) "
+            f"FROM {quote_ident(schema)}.{quoted_table} WHERE date >= ?",
+            (cutoff_value,),
+        ).fetchone()[0]
+        try:
+            counter_sums[column] = float(value)
+        except (TypeError, ValueError):
+            counter_sums[column] = 0.0
+    return row_count, counter_sums
 
 
 def compare_table(
@@ -453,45 +467,34 @@ def compare_table(
 
     quoted_table = quote_ident(table)
     cutoff_value = table_cutoff_value(conn, table, cutoff_epoch)
-    join = join_expr(key_columns)
-    bad_conditions = [missing_expr(key_columns)]
-    bad_conditions.extend(identity_diff_expr(identity_columns))
-    bad_conditions.extend(
-        f"l.{quote_ident(column)} IS NULL OR l.{quote_ident(column)} < b.{quote_ident(column)}"
-        for column in counter_columns
-    )
-    bad_where = " OR ".join(f"({condition})" for condition in bad_conditions)
+    gold_count, gold_sums = aggregate_window_stats(conn, "gold", table, cutoff_value, counter_columns)
+    live_count, live_sums = aggregate_window_stats(conn, "main", table, cutoff_value, counter_columns)
 
-    bad_sql = f"""
-        SELECT COUNT(*)
-        FROM gold.{quoted_table} AS b
-        LEFT JOIN main.{quoted_table} AS l ON {join}
-        WHERE b.date >= ? AND ({bad_where})
-    """
-    bad_count = int(conn.execute(bad_sql, (cutoff_value,)).fetchone()[0])
-    if bad_count:
+    if live_count < gold_count:
         weaker.append(
-            f"{db_label}.{table}: {bad_count} baseline row(s) in active window were deleted, changed, or reduced"
+            f"{db_label}.{table}: active-window row count decreased from {gold_count} to {live_count}"
         )
         return
 
-    positive_conditions = [missing_expr(key_columns).replace("l.", "b.")]
-    # For a live row, b.<marker> IS NULL means new row. Counter increases are also monotone.
-    marker = key_columns[-1]
-    positive_conditions = [f"b.{quote_ident(marker)} IS NULL"]
-    positive_conditions.extend(
-        f"l.{quote_ident(column)} > b.{quote_ident(column)}" for column in counter_columns
-    )
-    positive_where = " OR ".join(f"({condition})" for condition in positive_conditions)
-    positive_sql = f"""
-        SELECT COUNT(*)
-        FROM main.{quoted_table} AS l
-        LEFT JOIN gold.{quoted_table} AS b ON {join}
-        WHERE l.date >= ? AND ({positive_where})
-    """
-    positive_count = int(conn.execute(positive_sql, (cutoff_value,)).fetchone()[0])
-    if positive_count:
-        stronger.append(f"{db_label}.{table}: {positive_count} monotone stats update(s) in active window")
+    for column in counter_columns:
+        gold_value = gold_sums[column]
+        live_value = live_sums[column]
+        if live_value < gold_value:
+            weaker.append(
+                f"{db_label}.{table}: active-window total {column!r} decreased from {gold_value:g} to {live_value:g}"
+            )
+            return
+
+    stronger_details: list[str] = []
+    if live_count > gold_count:
+        stronger_details.append(f"row count {gold_count}->{live_count}")
+    for column in counter_columns:
+        gold_value = gold_sums[column]
+        live_value = live_sums[column]
+        if live_value > gold_value:
+            stronger_details.append(f"{column} {gold_value:g}->{live_value:g}")
+    if stronger_details:
+        stronger.append(f"{db_label}.{table}: " + ", ".join(stronger_details))
 
 
 def compare_stats_db(
@@ -513,7 +516,10 @@ def compare_stats_db(
         weaker.append(f"{db_label}: missing live database")
         return
 
-    conn = sqlite3.connect(f"file:{live_path}?mode=ro", uri=True)
+    try:
+        conn = sqlite3.connect(f"file:{live_path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        conn = sqlite3.connect(f"file:{live_path}?mode=ro&immutable=1", uri=True)
     try:
         conn.execute("ATTACH DATABASE ? AS gold", (f"file:{gold_path}?mode=ro&immutable=1",))
         live_ok = validate_schema(conn, db_label, "main", expected_schemas, weaker)

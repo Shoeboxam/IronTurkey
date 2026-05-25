@@ -1,27 +1,23 @@
 # Iron Turkey
 
-A small macOS companion utility for [Cold Turkey](https://getcoldturkey.com/).
+Replaces [Cold Turkey's](https://getcoldturkey.com/) app-level settings password with macOS admin authorization.
 
-Cold Turkey is a useful blocking app, but its internal configuration can be
-easier to change than many users expect. Iron Turkey adds a guard
+Cold Turkey Blocker is useful, but its local configuration can be
+easier to change than many users expect. Iron Turkey adds an OS-enforced guard
 that helps Cold Turkey continue enforcing the blocking setup you chose.
 
-## Usage
-
 Iron Turkey has two modes: **Normal Mode** and **Edit Mode**. 
-Launching Iron Turkey toggles between the two modes. 
-Each mode change requires administrator approval.
 
-In Normal Mode, Iron Turkey monitors your Cold Turkey configuration,
-only keeping policy changes that are more restrictive. Statistics databases are
-kept with an append-or-increment-only rule over the active policy window.
+In Normal Mode, Iron Turkey monitors Cold Turkey,
+only keeping tightened policies and increasing statistics.
 
-When entering Edit Mode, Iron Turkey opens Cold Turkey. 
-While in Edit Mode, the guard is disabled so you can adjust your configuration normally.
+When launched from Normal Mode, Iron Turkey requests administrator authorization to enter Edit Mode. 
+While in Edit Mode, the policy guard is disabled and you can configure Cold Turkey normally.
 
-When returning to Normal Mode, Iron Turkey asks whether to keep or discard your changes.
-Iron Turkey automatically exits Edit Mode at **5:00 AM**, discarding any unconfirmed changes.
+When launched from Edit Mode, Iron Turkey summarizes policy changes and asks whether
+to keep or discard them. Keeping policy changes requires administrator authorization.
 
+Iron Turkey automatically discards unconfirmed policy changes and returns to Normal Mode at **5:00 AM**.
 
 ## Install
 

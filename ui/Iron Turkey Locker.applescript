@@ -1,19 +1,9 @@
+use scripting additions
+
 on openColdTurkeyUI()
-    try
-        tell application id "com.getcoldturkey.blocker" to activate
-    end try
-
-    delay 0.2
-
-    try
-        do shell script "open -a " & quoted form of "/Applications/Cold Turkey Blocker.app"
-    on error errMsg number errNum
-        try
-            tell application id "com.getcoldturkey.blocker" to activate
-        on error
-            error "Cold Turkey UI could not be opened: " & errMsg & " (" & errNum & ")"
-        end try
-    end try
+    set appPath to "/Applications/Cold Turkey Blocker.app"
+    set openCommand to "open -a " & quoted form of appPath
+    do shell script openCommand
 end openColdTurkeyUI
 
 on currentMode()
@@ -64,7 +54,7 @@ if modeText is "locked" then
     end try
 else if modeText is "unlocked" then
     try
-        set reviewText to do shell script "/Library/Application\\ Support/IronTurkeyLocker/policy_compare.py --summary"
+        set reviewText to do shell script "/Library/Application\\ Support/IronTurkeyLocker/policy_compare.py --summary --immutable-live"
         activate
         set choice to reviewChoiceFor(reviewText)
         set choice to do shell script "/bin/echo -n " & quoted form of choice

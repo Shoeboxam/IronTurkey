@@ -162,7 +162,15 @@ raw_hash() {
     python3 - <<'PY' "$ACTIVE_DB"
 import hashlib, sqlite3, sys
 db_path = sys.argv[1]
-conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+last_error = None
+for uri in (f"file:{db_path}?mode=ro", f"file:{db_path}?mode=ro&immutable=1"):
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+        break
+    except sqlite3.OperationalError as exc:
+        last_error = exc
+else:
+    raise last_error
 try:
     raw = conn.execute("SELECT value FROM settings WHERE key='settings'").fetchone()[0]
 finally:
@@ -184,8 +192,6 @@ state_signature() {
     local app_hash
     app_hash="$(raw_hash 2>/dev/null || printf 'unreadable')"
     printf 'app-settings:%s\n' "$app_hash"
-    printf 'browser:%s\n' "$(file_signature "$ACTIVE_BROWSER_DB")"
-    printf 'helper:%s\n' "$(file_signature "$ACTIVE_HELPER_DB")"
 }
 
 refresh_state_signature() {
@@ -248,7 +254,7 @@ backup_active_to_gold() {
     sqlite_integrity_ok "$tmp_gold" || return 1
     mv -f "$tmp_gold" "$gold_db"
     chown root:wheel "$gold_db" 2>/dev/null || true
-    chmod 600 "$gold_db" 2>/dev/null || true
+    chmod 644 "$gold_db" 2>/dev/null || true
 }
 
 ensure_required_gold_dbs() {
@@ -300,6 +306,7 @@ restore_gold_state_into_active() {
     restore_policy_gold_into_active_stopped "$tmp_dir" || return 1
     restore_stats_gold_into_active_stopped "$tmp_dir" || return 1
     refresh_state_signature
+    start_cold_turkey >/dev/null 2>&1 || true
 }
 
 promote_active_state_to_gold() {
@@ -327,6 +334,7 @@ restore_policy_gold_into_active() {
     stop_cold_turkey || return 1
     restore_policy_gold_into_active_stopped "$tmp_dir" || return 1
     refresh_state_signature
+    start_cold_turkey >/dev/null 2>&1 || true
 }
 
 restore_stats_gold_into_active() {
@@ -336,4 +344,5 @@ restore_stats_gold_into_active() {
     stop_cold_turkey || return 1
     restore_stats_gold_into_active_stopped "$tmp_dir" || return 1
     refresh_state_signature
+    start_cold_turkey >/dev/null 2>&1 || true
 }

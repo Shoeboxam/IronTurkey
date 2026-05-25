@@ -9,10 +9,9 @@ LOG_FILE="$LOG_DIR/guard.log"
 TMP_DIR="$STATE_DIR/guard-tmp"
 COMPARE_SCRIPT="$ENFORCER_DIR/policy_compare.py"
 STATS_COMPARE_SCRIPT="$ENFORCER_DIR/stats_compare.py"
-STARTUP_GRACE_SECONDS=45
+STARTUP_GRACE_SECONDS=20
 AGENT_MISSING_GRACE_SECONDS=120
-SETTLE_SECONDS=8
-MAX_UNSETTLED_SECONDS=30
+STATS_CHECK_INTERVAL_SECONDS=15
 COMPARATOR_ERROR_LIMIT=3
 AGENT_RESTART_SECONDS=180
 
@@ -105,6 +104,22 @@ log() {
     log_line "$LOG_FILE" "$@"
 }
 
+policy_hash_from_signature() {
+    local signature="$1"
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            app-settings:*)
+                printf '%s' "${line#app-settings:}"
+                return 0
+                ;;
+        esac
+    done <<EOF
+$signature
+EOF
+    return 1
+}
+
 lock_request_file_path() {
     lock_request_file
 }
@@ -170,18 +185,19 @@ main() {
     local last_running=0
     local grace_until=0
     local missing_since=0
-    local pending_signature=""
-    local pending_since=0
-    local churn_since=0
     local last_error=""
     local comparator_errors=0
     local stats_errors=0
     local restart_attempted=0
+    local last_stats_check=0
+    local last_logged_policy_hash=""
+    local last_policy_hash_change_at=0
 
     if [ ! -f "$HASH_FILE" ]; then
         state_signature > "$HASH_FILE"
         log "Initialized state signature"
     fi
+    last_logged_policy_hash="$(policy_hash_from_signature "$(cat "$HASH_FILE" 2>/dev/null || true)")"
 
     log "Guard watcher started"
     if ! verify_cold_turkey_installation; then
@@ -205,11 +221,9 @@ main() {
                 current_mode="locked"
                 grace_until=$(( $(date +%s) + STARTUP_GRACE_SECONDS ))
                 last_running=0
-                pending_signature=""
-                pending_since=0
-                churn_since=0
                 comparator_errors=0
                 stats_errors=0
+                last_stats_check=0
                 last_error=""
             fi
         fi
@@ -227,9 +241,6 @@ main() {
                     restart_attempted=0
                 fi
                 grace_until=$((now + AGENT_MISSING_GRACE_SECONDS))
-                pending_signature=""
-                pending_since=0
-                churn_since=0
 
                 if [ $((now - missing_since)) -ge "$AGENT_RESTART_SECONDS" ] && [ "$restart_attempted" -eq 0 ]; then
                     if start_cold_turkey; then
@@ -253,9 +264,8 @@ main() {
                 if [ "$grace_until" -lt $((now + STARTUP_GRACE_SECONDS)) ]; then
                     grace_until=$((now + STARTUP_GRACE_SECONDS))
                 fi
-                pending_signature=""
-                pending_since=0
-                churn_since=0
+                last_logged_policy_hash=""
+                last_policy_hash_change_at=0
                 log "Cold Turkey agent detected; waiting for startup to stabilize"
             fi
 
@@ -284,21 +294,15 @@ main() {
                 continue
             fi
 
-            if [ "$current_signature" != "$pending_signature" ]; then
-                if [ "$churn_since" -eq 0 ]; then
-                    churn_since="$now"
+            current_policy_hash="$(policy_hash_from_signature "$current_signature" || true)"
+            if [ -n "$current_policy_hash" ] && [ "$current_policy_hash" != "$last_logged_policy_hash" ]; then
+                last_policy_hash_change_at="$now"
+                if [ -n "$last_logged_policy_hash" ]; then
+                    log "Observed policy hash change: ${last_logged_policy_hash:0:12} -> ${current_policy_hash:0:12}"
+                else
+                    log "Observed initial policy hash: ${current_policy_hash:0:12}"
                 fi
-                pending_signature="$current_signature"
-                pending_since="$now"
-                if [ $((now - churn_since)) -lt "$MAX_UNSETTLED_SECONDS" ]; then
-                    sleep 2
-                    continue
-                fi
-            fi
-
-            if [ $((now - pending_since)) -lt "$SETTLE_SECONDS" ] && [ $((now - churn_since)) -lt "$MAX_UNSETTLED_SECONDS" ]; then
-                sleep 2
-                continue
+                last_logged_policy_hash="$current_policy_hash"
             fi
 
             policy_is_at_least_as_strict || true
@@ -310,12 +314,13 @@ main() {
                 if [ -n "$compare_output" ]; then
                     log "Comparator rejected live policy: $compare_output"
                 fi
+                if [ "$last_policy_hash_change_at" -gt 0 ]; then
+                    log "Policy weakening detected $((now - last_policy_hash_change_at))s after observed hash change"
+                fi
                 restore_policy_gold
                 grace_until=$((now + STARTUP_GRACE_SECONDS))
                 last_running=0
-                pending_signature=""
-                pending_since=0
-                churn_since=0
+                last_stats_check=0
                 last_error=""
                 sleep 2
                 continue
@@ -338,9 +343,7 @@ main() {
                     stats_errors=0
                     grace_until=$((now + STARTUP_GRACE_SECONDS))
                     last_running=0
-                    pending_signature=""
-                    pending_since=0
-                    churn_since=0
+                    last_stats_check=0
                     last_error=""
                     sleep 2
                     continue
@@ -350,7 +353,25 @@ main() {
             fi
             comparator_errors=0
 
+            if [ "$relation" = "stronger" ]; then
+                if [ "$last_policy_hash_change_at" -gt 0 ]; then
+                    log "Policy strengthening detected $((now - last_policy_hash_change_at))s after observed hash change"
+                fi
+                promote_live_to_gold
+                last_error=""
+                sleep 2
+                continue
+            fi
+
+            if [ "$last_stats_check" -ne 0 ] && [ $((now - last_stats_check)) -lt "$STATS_CHECK_INTERVAL_SECONDS" ]; then
+                state_signature > "$HASH_FILE"
+                last_error=""
+                sleep 2
+                continue
+            fi
+
             stats_are_monotone || true
+            last_stats_check="$now"
             stats_rel="$(stats_relation)"
 
             if [ "$stats_rel" = "weaker" ]; then
@@ -362,9 +383,7 @@ main() {
                 restore_stats_gold
                 grace_until=$((now + STARTUP_GRACE_SECONDS))
                 last_running=0
-                pending_signature=""
-                pending_since=0
-                churn_since=0
+                last_stats_check=0
                 last_error=""
                 sleep 2
                 continue
@@ -387,9 +406,7 @@ main() {
                     stats_errors=0
                     grace_until=$((now + STARTUP_GRACE_SECONDS))
                     last_running=0
-                    pending_signature=""
-                    pending_since=0
-                    churn_since=0
+                    last_stats_check=0
                     last_error=""
                     sleep 2
                     continue
@@ -399,24 +416,15 @@ main() {
             fi
             stats_errors=0
 
-            if [ "$relation" = "stronger" ] || [ "$stats_rel" = "stronger" ]; then
+            if [ "$stats_rel" = "stronger" ]; then
                 promote_live_to_gold
                 last_error=""
-                pending_signature=""
-                pending_since=0
-                churn_since=0
             else
                 state_signature > "$HASH_FILE"
                 last_error=""
-                pending_signature=""
-                pending_since=0
-                churn_since=0
             fi
         else
             last_running=0
-            pending_signature=""
-            pending_since=0
-            churn_since=0
         fi
 
         sleep 2

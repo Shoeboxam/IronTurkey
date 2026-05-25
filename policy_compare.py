@@ -99,12 +99,27 @@ def decode_payload(value: str) -> str:
     return "".join(chr(int(data[i : i + 2], 16) - 0x11) for i in range(0, len(data), 2))
 
 
-def load_settings_json(db_path: str) -> dict[str, Any]:
-    immutable = db_path.startswith(DEFAULT_GOLD_DB.rsplit("/", 1)[0])
-    uri = f"file:{db_path}?mode=ro"
+def connect_readonly(db_path: str, immutable: bool = False) -> sqlite3.Connection:
+    uris = []
     if immutable:
-        uri += "&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+        uris.append(f"file:{db_path}?mode=ro&immutable=1")
+    else:
+        uris.append(f"file:{db_path}?mode=ro")
+        uris.append(f"file:{db_path}?mode=ro&immutable=1")
+
+    last_error: Exception | None = None
+    for uri in uris:
+        try:
+            return sqlite3.connect(uri, uri=True)
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise sqlite3.OperationalError(f"unable to open database file: {db_path}")
+
+
+def load_settings_json(db_path: str, immutable: bool = False) -> dict[str, Any]:
+    conn = connect_readonly(db_path, immutable=immutable)
     try:
         actual_tables = {
             row[0]
@@ -137,6 +152,18 @@ def as_set(value: Any) -> set[str]:
     raise TypeError(f"Expected list, got {type(value).__name__}")
 
 
+def normalize_enabled(value: Any) -> Any:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "false"}:
+            return lowered
+    return value
+
+
 def compare_enabled(
     block_name: str,
     gold_value: Any,
@@ -144,6 +171,9 @@ def compare_enabled(
     weaker_reasons: list[str],
     stronger_reasons: list[str],
 ) -> None:
+    gold_value = normalize_enabled(gold_value)
+    live_value = normalize_enabled(live_value)
+
     if gold_value == live_value:
         return
     if gold_value == "false" and live_value == "true":
@@ -425,6 +455,11 @@ def compare_blocks(
             )
             continue
 
+        live_enabled = normalize_enabled(live_block.get("enabled"))
+        if live_enabled == "false":
+            weaker_reasons.append(f"new live block {block_name!r} is disabled")
+            continue
+
         stronger_reasons.append(f"new live block {block_name!r} is present")
 
         for field in sorted(BLOCK_SUPERSET_FIELDS):
@@ -500,6 +535,11 @@ def main() -> int:
     parser.add_argument("--gold-db", default=DEFAULT_GOLD_DB)
     parser.add_argument("--live-db", default=DEFAULT_LIVE_DB)
     parser.add_argument(
+        "--immutable-live",
+        action="store_true",
+        help="Open the live DB using SQLite immutable mode for UI-safe read-only review.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON instead of text.",
@@ -511,8 +551,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    gold = load_settings_json(args.gold_db)
-    live = load_settings_json(args.live_db)
+    gold = load_settings_json(args.gold_db, immutable=True)
+    live = load_settings_json(args.live_db, immutable=args.immutable_live)
     result = compare_policy(gold, live)
 
     if args.json:
